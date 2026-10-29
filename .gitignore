@@ -6,6 +6,12 @@ config*.json
 logfile.txt
 user_data/*
 !user_data/strategy/sample_strategy.py
+# Custom paper-trading setup (dry-run only)
+!user_data/strategies
+user_data/strategies/*
+!user_data/strategies/EmaRsiPaperStrategy.py
+!user_data/config_paper_100usdt.json
+!user_data/README_PAPER_TRADING.md
 !user_data/notebooks
 !user_data/models
 !user_data/freqaimodels
