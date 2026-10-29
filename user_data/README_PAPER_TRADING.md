@@ -180,3 +180,70 @@ Avec Docker, préfixer chaque commande `freqtrade ...` par `docker compose run -
 
 Contrôle technique hors-ligne (données de test du dépôt, 5m, ≈ 10 jours, non représentatif) :
 12 trades, 97,121 USDT final (−2,88 %). Ce chiffre valide seulement que la V2 tourne dans le moteur.
+
+### Résultats V1 / V2 mesurés par l'utilisateur (5 paires, 1h + détail 5m)
+
+| Période | Marché | V1 | V2 |
+| --- | --- | --- | --- |
+| 2025 | −19,31 % | −37,72 % (323 trades) | −40,48 % (157 trades) |
+| 2026 (→ 29/10) | −18,91 % | −9,88 % (266 trades) | +2,05 % (120 trades) |
+
+V2 2025 par raison de sortie : ROI +39,31 USDT, RSI +6,21 USDT, stoploss −85,88 USDT (63 trades).
+Conclusion : ni la V1 ni la V2 ne sont rentables.
+
+## Version 3 — `DonchianBreakoutStrategy` (cassure de plus haut)
+
+Fichiers : `user_data/strategies/DonchianBreakoutStrategy.py`, `user_data/config_paper_v3_100usdt.json`
+(10 paires, `max_open_trades: 5`, mêmes garde-fous : dry-run, sans clés, spot, sans levier).
+
+Logique (1h, spot, long uniquement) :
+
+- **Entrée** : clôture au-dessus du plus haut des 50 jours précédents, et BTC au-dessus de sa SMA 100 jours.
+- **Sortie** : clôture sous le plus bas des 5 jours précédents, ou stoploss −12 %. Pas de take-profit.
+
+### Méthode de recherche
+
+Backtests hors-ligne avec le moteur Freqtrade (exchange simulé), données Binance 1h uploadées par
+l'utilisateur, 10 paires (BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, LINK, LTC), frais 0,1 %, 100 USDT.
+Le harness reproduit les résultats V1/V2 de l'utilisateur (V1 2025 : 323 trades, −37,80 % contre −37,72 %).
+
+1. Trois familles testées sur 2022–2025, année par année : tendance lente (36 variantes),
+   cassure Donchian (54 + 200 + 9 variantes), achat de creux RSI (108 variantes).
+2. Donchian retenu : toutes ses variantes sont positives sur 2022–2025 cumulé, avec une zone stable
+   (entrée 40–60 jours, sortie 3–7 jours). Réglage choisi au centre de cette zone.
+3. 2026 gardé de côté et testé **une seule fois** à la fin.
+4. `freqtrade lookahead-analysis` : aucun biais (0 signal biaisé sur 20).
+
+### Résultats V3 (10 paires, 1h, frais 0,1 %, 100 USDT)
+
+| Période | Trades | V3 | Marché | Drawdown max |
+| --- | --- | --- | --- | --- |
+| 2022 (dès avril, préchauffage) | 6 | −5,58 % | −62,76 % | 6,15 % |
+| 2023 | 49 | +65,28 % | +189,10 % | 16,52 % |
+| 2024 | 41 | +105,90 % | +99,75 % | 13,52 % |
+| 2025 | 33 | −3,77 % | −30,03 % | 10,12 % |
+| **2026 (jamais vu, → 29/10)** | 27 | **−2,12 %** | −23,04 % | 9,96 % |
+| Continu 2022 → 2026 | 156 | +189,92 % | −8,67 % | 19,08 % |
+
+Lecture honnête :
+
+- La V3 gagne dans les marchés haussiers et perd peu dans les marchés baissiers.
+- Elle **n'est pas rentable chaque année** : 2022, 2025 et 2026 sont légèrement négatifs.
+- Le +189,92 % continu porte surtout sur des années ayant servi aux réglages : c'est un chiffre optimiste.
+  Le seul test indépendant (2026) donne −2,12 % dans un marché à −23 %.
+- Le backtest suppose des exécutions au prix d'ouverture de la bougie suivante, sans glissement.
+  Le dry-run est l'étape suivante pour mesurer l'écart avec la réalité.
+
+### Commandes V3
+
+```bash
+freqtrade download-data -c user_data/config_paper_v3_100usdt.json --timeframes 1h --timerange 20220101-
+```
+
+```bash
+freqtrade backtesting -c user_data/config_paper_v3_100usdt.json --strategy DonchianBreakoutStrategy --timeframe 1h --timerange 20220101- --fee 0.001
+```
+
+```bash
+freqtrade trade -c user_data/config_paper_v3_100usdt.json --strategy DonchianBreakoutStrategy --db-url sqlite:///user_data/paper_v3.dryrun.sqlite
+```

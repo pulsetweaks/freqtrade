@@ -12,6 +12,8 @@ user_data/strategies/*
 !user_data/strategies/EmaRsiPaperStrategy.py
 !user_data/strategies/EmaRsiPaperStrategyV2.py
 !user_data/config_paper_100usdt.json
+!user_data/config_paper_v3_100usdt.json
+!user_data/strategies/DonchianBreakoutStrategy.py
 !user_data/README_PAPER_TRADING.md
 !user_data/notebooks
 !user_data/models

@@ -9,6 +9,7 @@ They run fully offline (exchange is mocked, data comes from tests/testdata).
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -317,3 +318,99 @@ def test_v2_has_no_ema_cross_down_exit(v2_conf):
     assert "ema_cross_down" not in set(exits["exit_tag"].dropna())
     # Every exit signal comes from an overbought RSI.
     assert (exits["rsi"] > strategy.sell_rsi_min.value).all()
+
+
+# --- V3: DonchianBreakoutStrategy ---------------------------------------------------
+
+STRATEGY_V3_NAME = "DonchianBreakoutStrategy"
+PAPER_CONFIG_V3 = ROOT / "user_data" / "config_paper_v3_100usdt.json"
+
+
+@pytest.fixture
+def v3_conf(paper_conf):
+    paper_conf["strategy"] = STRATEGY_V3_NAME
+    return paper_conf
+
+
+def test_v3_paper_config_is_safe():
+    conf = load_config_file(str(PAPER_CONFIG_V3))
+    validate_config_schema(conf)
+
+    assert conf["dry_run"] is True
+    assert conf["dry_run_wallet"] == 100
+    assert conf["strategy"] == STRATEGY_V3_NAME
+    assert conf["max_open_trades"] == 5
+    assert conf["exchange"]["key"] == ""
+    assert conf["exchange"]["secret"] == ""
+    assert conf["trading_mode"] == "spot"
+    assert conf.get("margin_mode", "") == ""
+    assert conf["telegram"]["enabled"] is False
+    assert not conf.get("api_server", {}).get("enabled", False)
+    # The BTC regime filter needs BTC/USDT data.
+    assert "BTC/USDT" in conf["exchange"]["pair_whitelist"]
+
+
+def test_v3_loads_with_safe_defaults(v3_conf):
+    strategy = _load_strategy(v3_conf)
+
+    assert strategy.can_short is False
+    assert strategy.stoploss == -0.12
+    assert strategy.timeframe == "1h"
+    # Must fit in the 2499 candles Binance provides at start-up.
+    assert strategy.startup_candle_count == 2400
+    assert ("BTC/USDT", "1h") in strategy.informative_pairs()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"runmode": RunMode.LIVE, "dry_run": False},
+        {"runmode": RunMode.DRY_RUN, "dry_run": False},
+        {"runmode": RunMode.DRY_RUN, "trading_mode": "futures"},
+    ],
+)
+def test_v3_bot_start_refuses_unsafe_modes(v3_conf, overrides):
+    v3_conf.update(overrides)
+    strategy = _load_strategy(v3_conf)
+    with pytest.raises(OperationalException):
+        strategy.bot_start()
+
+
+def _v3_signals(v3_conf, prices, btc_prices):
+    strategy = _load_strategy(v3_conf)
+    strategy.dp = MagicMock()
+    strategy.dp.get_pair_dataframe.return_value = _synthetic_ohlcv(btc_prices)
+    return _advise_all(strategy, _synthetic_ohlcv(prices))
+
+
+def _range_then_breakout_then_drop():
+    rng = np.random.default_rng(1)
+    flat = 100 + rng.normal(0, 0.5, 24 * 110)  # 110 days of range (> BTC 100-day SMA)
+    up = np.linspace(101, 160, 24 * 5)  # breakout (+0.4 % per candle)
+    down = np.linspace(160, 120, 24 * 5)  # drop below the 5-day low
+    return np.concatenate([flat, up, down])
+
+
+def test_v3_enters_on_breakout_and_exits_on_low(v3_conf):
+    prices = _range_then_breakout_then_drop()
+    btc_bull = np.linspace(50, 150, len(prices))
+    df = _v3_signals(v3_conf, prices, btc_bull)
+
+    entries = df[df["enter_long"] == 1]
+    exits = df[df["exit_long"] == 1]
+    assert len(entries) >= 1
+    assert set(entries["enter_tag"]) == {"donchian_breakout"}
+    assert (entries["close"] > entries["donchian_high"]).all()
+    # First breakout happens after the 50-day range is established.
+    assert entries.index[0] >= 24 * 110
+    assert len(exits) >= 1
+    assert set(exits["exit_tag"].dropna()) == {"donchian_low"}
+    assert (exits["close"] < exits["donchian_low"]).all()
+
+
+def test_v3_no_entry_when_btc_bearish(v3_conf):
+    prices = _range_then_breakout_then_drop()
+    btc_bear = np.linspace(150, 50, len(prices))
+    df = _v3_signals(v3_conf, prices, btc_bear)
+
+    assert df["enter_long"].fillna(0).eq(0).all()
