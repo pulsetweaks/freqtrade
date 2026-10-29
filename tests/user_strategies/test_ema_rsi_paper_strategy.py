@@ -229,3 +229,91 @@ def test_offline_backtest_with_fees_and_100usdt_wallet(paper_conf, mocker, testd
         assert (trades["fee_close"] == 0.001).all()
         assert (trades["leverage"] == 1.0).all()
         assert not trades["is_short"].any()
+
+
+# --- V2 -----------------------------------------------------------------------------
+
+STRATEGY_V2_NAME = "EmaRsiPaperStrategyV2"
+
+
+@pytest.fixture
+def v2_conf(paper_conf):
+    paper_conf["strategy"] = STRATEGY_V2_NAME
+    return paper_conf
+
+
+def test_v2_loads_with_safe_defaults(v2_conf):
+    strategy = _load_strategy(v2_conf)
+
+    assert strategy.__class__.__name__ == STRATEGY_V2_NAME
+    assert strategy.can_short is False
+    assert strategy.stoploss == -0.05
+    assert strategy.timeframe == "1h"
+    assert strategy.startup_candle_count >= 200
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"runmode": RunMode.LIVE, "dry_run": False},
+        {"runmode": RunMode.DRY_RUN, "dry_run": False},
+        {"runmode": RunMode.DRY_RUN, "trading_mode": "futures"},
+    ],
+)
+def test_v2_bot_start_refuses_unsafe_modes(v2_conf, overrides):
+    v2_conf.update(overrides)
+    strategy = _load_strategy(v2_conf)
+    with pytest.raises(OperationalException):
+        strategy.bot_start()
+
+
+def test_v2_bot_start_allows_dry_run(v2_conf):
+    v2_conf["runmode"] = RunMode.DRY_RUN
+    _load_strategy(v2_conf).bot_start()
+
+
+def _advise_all(strategy, df):
+    meta = {"pair": "BTC/USDT"}
+    df = strategy.advise_indicators(df, meta)
+    df = strategy.advise_entry(df, meta)
+    return strategy.advise_exit(df, meta)
+
+
+def test_v2_entries_only_above_long_term_trend(v2_conf):
+    strategy = _load_strategy(v2_conf)
+    rng = np.random.default_rng(42)
+    # Long up-trend (price above EMA 200), a dip, then a recovery.
+    trend = np.concatenate(
+        [np.linspace(50, 100, 400), np.linspace(100, 92, 80), np.linspace(92, 110, 120)]
+    )
+    df = _advise_all(strategy, _synthetic_ohlcv(trend + rng.normal(0, 0.4, len(trend))))
+
+    entries = df[df["enter_long"] == 1]
+    assert len(entries) >= 1
+    assert set(entries["enter_tag"]) == {"ema_cross_up_trend"}
+    assert (entries["close"] > entries["ema_trend"]).all()
+    assert (entries["ema_fast"] > entries["ema_slow"]).all()
+
+
+def test_v2_no_entry_in_long_down_trend(v2_conf):
+    strategy = _load_strategy(v2_conf)
+    rng = np.random.default_rng(7)
+    # Long down-trend with a short bounce: EMA 20/50 may cross up, but price stays below EMA 200.
+    trend = np.concatenate([np.linspace(200, 100, 400), np.linspace(100, 108, 60)])
+    df = _advise_all(strategy, _synthetic_ohlcv(trend + rng.normal(0, 0.4, len(trend))))
+
+    assert df["enter_long"].fillna(0).eq(0).all()
+
+
+def test_v2_has_no_ema_cross_down_exit(v2_conf):
+    strategy = _load_strategy(v2_conf)
+    rng = np.random.default_rng(42)
+    trend = np.concatenate(
+        [np.linspace(100, 80, 150), np.linspace(80, 95, 150), np.linspace(95, 75, 150)]
+    )
+    df = _advise_all(strategy, _synthetic_ohlcv(trend + rng.normal(0, 0.6, len(trend))))
+
+    exits = df[df["exit_long"] == 1]
+    assert "ema_cross_down" not in set(exits["exit_tag"].dropna())
+    # Every exit signal comes from an overbought RSI.
+    assert (exits["rsi"] > strategy.sell_rsi_min.value).all()

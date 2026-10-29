@@ -135,3 +135,48 @@ bien que la simple détention. En 5m, les nombreux croisements d'EMA génèrent 
 dont les frais absorbent les gains. Ce test valide le fonctionnement technique de la
 chaîne (stratégie → moteur → frais → wallet), pas la qualité de la stratégie.
 Un backtest sur données réelles 1h et sur plusieurs mois reste à faire (étape 4 ci-dessus).
+
+### Backtest V1 sur données réelles (exécuté par l'utilisateur)
+
+Binance spot, 1h avec détail 5m, du 2025-01-09 au 2026-10-29, frais 0,1 %, 100 USDT.
+
+| Métrique | Valeur |
+| --- | --- |
+| Trades | 598 (232 gagnants / 366 perdants, 38,8 %) |
+| Solde final | 58,249 USDT |
+| Profit total | **−41,75 %** |
+| Variation du marché | −25,61 % |
+| Drawdown max | 44,95 % |
+| Profit factor | 0,78 |
+
+Diagnostic : la sortie `ema_cross_down` a clôturé 340 trades, dont 339 en perte (−154 USDT),
+car le croisement arrive après la baisse. Environ 29 USDT de frais (29 038 USDT échangés).
+
+## Version 2 — `EmaRsiPaperStrategyV2`
+
+Fichier : `user_data/strategies/EmaRsiPaperStrategyV2.py` (la V1 reste inchangée pour comparer).
+
+Changements (hypothèses à mesurer, pas des améliorations garanties) :
+
+1. Suppression de la sortie `ema_cross_down` : sortie uniquement par ROI, stoploss ou RSI > 80.
+2. Filtre de tendance longue : achat seulement si le prix est au-dessus de l'EMA 200,
+   pour trader moins souvent et éviter d'acheter en marché baissier.
+
+Pour éviter le sur-ajustement, on mesure sur deux périodes séparées.
+
+Période 1 (2025) :
+
+```bash
+freqtrade backtesting -c user_data/config_paper_100usdt.json --strategy-list EmaRsiPaperStrategy EmaRsiPaperStrategyV2 --timeframe 1h --timeframe-detail 5m --timerange 20250101-20260101 --fee 0.001
+```
+
+Période 2 (2026, jamais utilisée pour concevoir la V2) :
+
+```bash
+freqtrade backtesting -c user_data/config_paper_100usdt.json --strategy-list EmaRsiPaperStrategy EmaRsiPaperStrategyV2 --timeframe 1h --timeframe-detail 5m --timerange 20260101- --fee 0.001
+```
+
+Avec Docker, préfixer chaque commande `freqtrade ...` par `docker compose run --rm`.
+
+Contrôle technique hors-ligne (données de test du dépôt, 5m, ≈ 10 jours, non représentatif) :
+12 trades, 97,121 USDT final (−2,88 %). Ce chiffre valide seulement que la V2 tourne dans le moteur.
